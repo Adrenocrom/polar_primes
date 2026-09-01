@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-png = "0.17"
-chrono = "0.4"
+chrono = "0.4.45"
+png = "0.18.1"
+
