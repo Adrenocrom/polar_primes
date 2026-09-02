@@ -32,6 +32,11 @@ struct Params {
     offset_y: f64,
     /// Output file name; empty = auto "image_YYYYMMDD.png".
     output: String,
+    /// Optional .xyz export path: writes one atom per prime in 3D space.
+    export_xyz: Option<String>,
+    /// Z axis scale for the .xyz export, in units per integer.
+    /// 0 = auto (use the same scale as the PNG's radius axis).
+    z_scale: f64,
 }
 
 impl Params {
@@ -50,6 +55,8 @@ impl Params {
             offset_x: 0.0,
             offset_y: 0.0,
             output: String::new(),
+            export_xyz: None,
+            z_scale: 0.0,
         };
         let mut i = 0;
         while i < args.len() {
@@ -66,6 +73,8 @@ impl Params {
                 "--offset-x" => p.offset_x = val(i)?.parse().map_err(|_| "invalid --offset-x")?,
                 "--offset-y" => p.offset_y = val(i)?.parse().map_err(|_| "invalid --offset-y")?,
                 "--output" => p.output = val(i)?.clone(),
+                "--export-xyz" => p.export_xyz = Some(val(i)?.clone()),
+                "--z-scale" => p.z_scale = val(i)?.parse().map_err(|_| "invalid --z-scale")?,
                 _ => return Err(format!("unknown argument: {}", args[i])),
             }
             i += 2;
@@ -225,6 +234,46 @@ fn write_png(path: &str, buf: &[u8], w: u32, h: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Write the primes as a 3D point cloud in .xyz format (one atom per prime).
+///
+/// The spiral is embedded in 3D as a helix: x/y keep the polar position
+/// (radius = prime * scale, angle = prime * angle_step) and z rises
+/// linearly with the prime value, so the spiral becomes a 3D helix.
+/// Element "C" (carbon) is used as a neutral placeholder; most viewers
+/// (VMD, Avogadro, OVITO, Jmol, Blender importers) accept it fine.
+fn write_xyz(path: &str, p: &Params, primes: &[u64]) -> Result<(), String> {
+    // Same auto-scale logic as the PNG render so both outputs agree.
+    let max_r = ((p.width.min(p.height) as f64 / 2.0) - p.dot_radius - 1.0).max(0.0);
+    let scale = if p.scale > 0.0 {
+        p.scale
+    } else {
+        match primes.last() {
+            Some(&last) if max_r > 0.0 => max_r * p.fill / last as f64,
+            _ => 0.0, // no primes or degenerate image -> empty cloud
+        }
+    };
+    let z_scale = if p.z_scale > 0.0 { p.z_scale } else { scale };
+
+    let mut out = String::new();
+    out.push_str(&format!("{}\n", primes.len()));
+    out.push_str(&format!(
+        "polar_primes: Sacks spiral as 3D helix, n={}, angle_step={}, scale={:.6}, z_scale={:.6}\n",
+        p.n, p.angle_step, scale, z_scale
+    ));
+    for &prime in primes {
+        let angle = prime as f64 * p.angle_step;
+        let r = prime as f64 * scale;
+        let x = r * angle.cos();
+        let y = r * angle.sin();
+        let z = prime as f64 * z_scale;
+        out.push_str(&format!(
+            "C {:.6} {:.6} {:.6}\n",
+            x, y, z
+        ));
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let p = match Params::parse(&args) {
@@ -235,6 +284,7 @@ fn main() {
             eprintln!("                  [--scale <float>] [--fill <float>] [--dot-radius <float>]");
             eprintln!("                  [--angle-step <float>] [--color <color>]");
             eprintln!("                  [--offset-x <float>] [--offset-y <float>] [--output <file>]");
+            eprintln!("                  [--export-xyz <file>] [--z-scale <float>]");
             eprintln!("  --color: #RRGGBB, #RRGGBBAA or a name (white black red green lime blue");
             eprintln!("           yellow cyan magenta orange purple pink gray)");
             eprintln!("  --scale: absolute px per integer (overrides --fill)");
@@ -242,6 +292,8 @@ fn main() {
             eprintln!("  --offset-x/--offset-y: shift the spiral center as a fraction of the");
             eprintln!("           half-image (0.5 = half of the half-width; positive x = right,");
             eprintln!("           positive y = down; negative values allowed)");
+            eprintln!("  --export-xyz: also write a 3D point cloud (.xyz, one atom per prime)");
+            eprintln!("  --z-scale:   z units per integer for the .xyz export (0 = same as --scale)");
             eprintln!("Defaults: n=1000 width=1000 height=1000 scale=auto fill=1.0");
             eprintln!("          dot-radius=1.5 angle-step=1.0 color=white");
             std::process::exit(1);
@@ -273,6 +325,18 @@ fn main() {
         Err(e) => {
             eprintln!("Error writing PNG: {}", e);
             std::process::exit(1);
+        }
+    }
+    if let Some(xyz_path) = &p.export_xyz {
+        match write_xyz(xyz_path, &p, &primes) {
+            Ok(_) => println!(
+                "Wrote {} ({} points, element C, z-scale {})",
+                xyz_path, primes.len(), p.z_scale
+            ),
+            Err(e) => {
+                eprintln!("Error writing XYZ: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
